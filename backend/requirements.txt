@@ -1,0 +1,7 @@
+fastapi # the web framework for building APIs with Python 3.6+ based on standard Python type hints
+uvicorn[standard] # the actual server that runs FastAPI- FastAPI just defines routes but uvicorn listens on a port and serves the actual requests
+sqlalchemy>=2.0 # ORM that lets you write Python classes instead of raw SQL for your Entry Table
+alembic # Migration tool for SQLAlchemy that allows you to version control your database schema
+pydantic-settings # reads config like Anthropic API key from environment variables .env files into a types Python object instead of scattering ps.environment calls around. 
+anthropic # Claude API client for Python
+httpx # an HTTP client library for Python that allows you to make asynchronous requests to external APIs, such as the Claude API
