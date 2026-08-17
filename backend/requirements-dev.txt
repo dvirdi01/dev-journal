@@ -1,0 +1,3 @@
+pytest # test runner 
+httpx # an HTTP client library for Python that allows you to make asynchronous requests to external APIs, such as the Claude API
+ruff # linter + formatter in one tool - catches unused imports, style issues and can auto-format

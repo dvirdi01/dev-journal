@@ -136,7 +136,11 @@ dev-journal/
 4. Retrieval logic — cosine similarity search (GET /query) + plain filtered queries
 
 **Phase 4 — Interfaces**
-1. CLI tool (Typer) — `journal log "..."`
+1. CLI tool (Typer) — `journal log "..."`. Must support cross-repo use as
+   a first-class feature, not an afterthought: auto-detect the calling
+   project (git remote/repo name of the cwd) with a `--project` override,
+   since the intended usage is running `journal log` from inside *other*
+   codebases (e.g. Volentia), not just from within dev-journal itself.
 2. Streamlit frontend — chat interface + basic dashboard (e.g. time per project)
 
 **Phase 5 — The scaling wall story**
@@ -176,6 +180,110 @@ Phase 1 should start from the SQLite plan, not this original Docker step.
 - Learned how to initialize a GitHub repo (README, .gitignore, license) and clone it locally as the starting point for a project
 - Learned how to give a repo persistent context for AI coding agents: add a `CLAUDE.md` at the repo root describing architecture/decisions/roadmap, then a thin `AGENTS.md` that just points to it (`AGENTS.md` is the filename other tools like Codex/Cursor look for, so this makes the same context portable across tools instead of duplicating it). *(Superseded 2026-08-16 — see below: journal moved from Notion into this file.)*
 
+### 2026-08-16 — Reality check: what is this project actually for
+
+**Context:** Got confused partway through setup about whether dev-journal
+was worth building, since the stated need ("easily track my comments,
+questions, workflow, decisions") was already fully solved by
+`context/journal.md` itself — no app required.
+
+**Decision:** Keep building the app anyway, but on the honest motivation:
+learning (hands-on FastAPI/SQLite/retrieval practice) and a portfolio
+piece — not because tracking-my-work requires it. The earlier "why build
+a real app, not a markdown file" reasoning (see above) was framed as
+product logic; that's still true but wasn't the real driver.
+
+**Takeaway:** separating "the need" (tracking — already solved, free)
+from "the reason to build" (learning + portfolio) should shape scoping
+going forward — invest effort in the parts that teach something or demo
+well (retrieval, structured queries, a real UI), and keep the rest as
+thin as possible rather than gold-plating plumbing no one will see.
+
+### 2026-08-16 — Learning: requirements.txt and `__init__.py` basics
+
+**Context:** First time setting up a Python backend from scratch (Phase 1,
+dependencies + config step) — both of these were new.
+
+**Learning — `requirements.txt`:** a plain text file listing the
+packages a project depends on (one per line, e.g. `fastapi`,
+`sqlalchemy>=2.0`), installed all at once with
+`pip install -r requirements.txt`. Split into two files here:
+`requirements.txt` (what the app needs to actually run — fastapi,
+uvicorn, sqlalchemy, alembic, pydantic-settings, anthropic, httpx) vs
+`requirements-dev.txt` (what only the developer needs — pytest, ruff).
+The split matters because a deployed server never needs a test runner or
+linter installed.
+
+**Learning — `__init__.py`:** an empty file placed in a folder to mark it
+as a Python *package*, which is what makes `from backend.app.core.config
+import get_settings`-style imports work across nested folders
+(`backend/app/__init__.py`, `backend/app/core/__init__.py`). Without it,
+Python may not reliably treat the folder as something importable — hit
+this directly when the first import attempt needed both files to exist
+before it worked.
+
+**Takeaway:** these are two of the "invisible scaffolding" pieces that
+tutorials often skip because they assume it — worth remembering neither
+was obvious coming in fresh.
+
+### 2026-08-16 — Bug: `db.py` import failed depending on working directory
+
+**Problem:** `python -c "from backend.app.core.db import engine, Base; ..."`
+run from the repo root raised `ImportError: cannot import name 'engine'
+from 'backend.app.core.db'` — despite `engine` clearly being defined in
+the file.
+
+**Investigation:** `db.py` internally does `from app.core.config import
+get_settings`, which assumes `app` is directly importable — true only
+when the working directory is `backend/` (matching how the app is meant
+to actually run: `uvicorn app.main:app --reload` from inside `backend/`).
+The Step 2 test command for `config.py` had instead been run from the
+repo root using a `backend.app.core...` prefix — that happened to work
+for `config.py` alone (no internal `app.xxx` imports) but silently broke
+for `db.py`, which does import that way internally.
+
+**Fix:** `cd backend` before running any ad-hoc import tests, matching
+the working directory the real server will run from.
+
+**Takeaway:** when a Python project's "run from here" directory matters
+(as it does whenever internal imports use a package-relative style like
+`app.xxx` instead of `backend.app.xxx`), ad-hoc test commands need to
+match that same working directory — testing from a different cwd than
+production can produce confusing, inconsistent import errors that look
+like a code bug but are actually a working-directory mismatch.
+
+### 2026-08-16 — Learning: `ruff check` vs `ruff format`, and a comment-trimming gotcha
+
+**Context:** Closing out Phase 1 by adding ruff lint/format config and
+running it for the first time.
+
+**Learning — two separate ruff commands, not one:** `ruff check .`
+*lints* (finds unused imports, unsorted imports, undefined names, style
+violations) and only it accepts `--fix` to auto-correct what it safely
+can. `ruff format .` *reformats* code style (whitespace, quote style,
+line wrapping) and needs no `--fix` flag — formatting the file *is* the
+fix; running `ruff format . --fix` errors because `--fix` isn't a valid
+argument for that subcommand.
+
+**Bug hit — deleting code while trimming a comment:** while shortening
+the long tutorial-style comments in `main.py` down to one-liners (per
+ruff's `E501` line-too-long complaints), the actual code lines sitting
+next to two comments (`logger = logging.getLogger(__name__)` and
+`app = FastAPI(...)`) got deleted along with the comment text, not just
+the comment. Result: `F821 Undefined name 'app'` from ruff, and it would
+have been a runtime `NameError` too — the `@app.get("/health")`
+decorator had nothing to attach to.
+
+**Fix:** restored the two code lines; rule going forward — when trimming
+a comment, only delete the `#` line itself, never touch the code line
+beside it.
+
+**Takeaway:** the underlying lesson (why the comments were too long in
+the first place) is a professional-code habit worth keeping: comments
+should capture the "why," not the "what" — verbose paragraph explanations
+belong in a journal/commit message/PR description, not inline, both
+because they go stale and because they trip line-length linting.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
@@ -206,3 +314,21 @@ the eventual content-generator tool and this data.
 **Takeaway:** for personal-scale logging that a tool will later parse
 programmatically, prefer the format the tool will actually consume over
 the format that's nicest to author in.
+
+### 2026-08-16 — GitHub template file discovery + PR template not showing
+
+**Problem:** Added `.github/PULL_REQUEST_TEMPLATE.md`, but the template
+didn't appear when opening a PR on GitHub.
+
+**Investigation:** Two separate gotchas stacked here:
+1. GitHub reads the PR template from the **base branch** of the PR (`main`), not the branch being compared from. The file only existed on `divjot-branch`, so it was invisible until merged.
+2. GitHub's template discovery is filename-based, not folder-based: it looks for the literal name `pull_request_template` (case-insensitive; `.md`/`.txt`/no-extension all work) in exactly one of three locations — repo root, `.github/`, or `docs/`. Being inside `.github/` doesn't make an arbitrary filename auto-apply; the name has to match. (Multiple selectable templates use a `.github/PULL_REQUEST_TEMPLATE/` folder instead, chosen via `?template=` in the PR-creation URL.)
+
+**Fix/Outcome:** Opened the PR anyway knowing the template wouldn't render
+this first time; it will auto-apply to every PR after this one merges to
+`main`.
+
+**Takeaway:** repo-level GitHub config (PR/issue templates, CODEOWNERS,
+workflows) only takes effect from the default branch — always ask "is
+this file actually merged to main yet?" before assuming GitHub picked it
+up.
