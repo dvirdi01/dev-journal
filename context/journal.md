@@ -206,3 +206,21 @@ the eventual content-generator tool and this data.
 **Takeaway:** for personal-scale logging that a tool will later parse
 programmatically, prefer the format the tool will actually consume over
 the format that's nicest to author in.
+
+### 2026-08-16 — GitHub template file discovery + PR template not showing
+
+**Problem:** Added `.github/PULL_REQUEST_TEMPLATE.md`, but the template
+didn't appear when opening a PR on GitHub.
+
+**Investigation:** Two separate gotchas stacked here:
+1. GitHub reads the PR template from the **base branch** of the PR (`main`), not the branch being compared from. The file only existed on `divjot-branch`, so it was invisible until merged.
+2. GitHub's template discovery is filename-based, not folder-based: it looks for the literal name `pull_request_template` (case-insensitive; `.md`/`.txt`/no-extension all work) in exactly one of three locations — repo root, `.github/`, or `docs/`. Being inside `.github/` doesn't make an arbitrary filename auto-apply; the name has to match. (Multiple selectable templates use a `.github/PULL_REQUEST_TEMPLATE/` folder instead, chosen via `?template=` in the PR-creation URL.)
+
+**Fix/Outcome:** Opened the PR anyway knowing the template wouldn't render
+this first time; it will auto-apply to every PR after this one merges to
+`main`.
+
+**Takeaway:** repo-level GitHub config (PR/issue templates, CODEOWNERS,
+workflows) only takes effect from the default branch — always ask "is
+this file actually merged to main yet?" before assuming GitHub picked it
+up.
