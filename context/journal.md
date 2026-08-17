@@ -252,6 +252,38 @@ match that same working directory — testing from a different cwd than
 production can produce confusing, inconsistent import errors that look
 like a code bug but are actually a working-directory mismatch.
 
+### 2026-08-16 — Learning: `ruff check` vs `ruff format`, and a comment-trimming gotcha
+
+**Context:** Closing out Phase 1 by adding ruff lint/format config and
+running it for the first time.
+
+**Learning — two separate ruff commands, not one:** `ruff check .`
+*lints* (finds unused imports, unsorted imports, undefined names, style
+violations) and only it accepts `--fix` to auto-correct what it safely
+can. `ruff format .` *reformats* code style (whitespace, quote style,
+line wrapping) and needs no `--fix` flag — formatting the file *is* the
+fix; running `ruff format . --fix` errors because `--fix` isn't a valid
+argument for that subcommand.
+
+**Bug hit — deleting code while trimming a comment:** while shortening
+the long tutorial-style comments in `main.py` down to one-liners (per
+ruff's `E501` line-too-long complaints), the actual code lines sitting
+next to two comments (`logger = logging.getLogger(__name__)` and
+`app = FastAPI(...)`) got deleted along with the comment text, not just
+the comment. Result: `F821 Undefined name 'app'` from ruff, and it would
+have been a runtime `NameError` too — the `@app.get("/health")`
+decorator had nothing to attach to.
+
+**Fix:** restored the two code lines; rule going forward — when trimming
+a comment, only delete the `#` line itself, never touch the code line
+beside it.
+
+**Takeaway:** the underlying lesson (why the comments were too long in
+the first place) is a professional-code habit worth keeping: comments
+should capture the "why," not the "what" — verbose paragraph explanations
+belong in a journal/commit message/PR description, not inline, both
+because they go stale and because they trip line-length linting.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
