@@ -136,7 +136,11 @@ dev-journal/
 4. Retrieval logic — cosine similarity search (GET /query) + plain filtered queries
 
 **Phase 4 — Interfaces**
-1. CLI tool (Typer) — `journal log "..."`
+1. CLI tool (Typer) — `journal log "..."`. Must support cross-repo use as
+   a first-class feature, not an afterthought: auto-detect the calling
+   project (git remote/repo name of the cwd) with a `--project` override,
+   since the intended usage is running `journal log` from inside *other*
+   codebases (e.g. Volentia), not just from within dev-journal itself.
 2. Streamlit frontend — chat interface + basic dashboard (e.g. time per project)
 
 **Phase 5 — The scaling wall story**
@@ -175,6 +179,25 @@ Phase 1 should start from the SQLite plan, not this original Docker step.
 
 - Learned how to initialize a GitHub repo (README, .gitignore, license) and clone it locally as the starting point for a project
 - Learned how to give a repo persistent context for AI coding agents: add a `CLAUDE.md` at the repo root describing architecture/decisions/roadmap, then a thin `AGENTS.md` that just points to it (`AGENTS.md` is the filename other tools like Codex/Cursor look for, so this makes the same context portable across tools instead of duplicating it). *(Superseded 2026-08-16 — see below: journal moved from Notion into this file.)*
+
+### 2026-08-16 — Reality check: what is this project actually for
+
+**Context:** Got confused partway through setup about whether dev-journal
+was worth building, since the stated need ("easily track my comments,
+questions, workflow, decisions") was already fully solved by
+`context/journal.md` itself — no app required.
+
+**Decision:** Keep building the app anyway, but on the honest motivation:
+learning (hands-on FastAPI/SQLite/retrieval practice) and a portfolio
+piece — not because tracking-my-work requires it. The earlier "why build
+a real app, not a markdown file" reasoning (see above) was framed as
+product logic; that's still true but wasn't the real driver.
+
+**Takeaway:** separating "the need" (tracking — already solved, free)
+from "the reason to build" (learning + portfolio) should shape scoping
+going forward — invest effort in the parts that teach something or demo
+well (retrieval, structured queries, a real UI), and keep the rest as
+thin as possible rather than gold-plating plumbing no one will see.
 
 ### Open Questions / To Revisit
 
