@@ -226,6 +226,32 @@ before it worked.
 tutorials often skip because they assume it — worth remembering neither
 was obvious coming in fresh.
 
+### 2026-08-16 — Bug: `db.py` import failed depending on working directory
+
+**Problem:** `python -c "from backend.app.core.db import engine, Base; ..."`
+run from the repo root raised `ImportError: cannot import name 'engine'
+from 'backend.app.core.db'` — despite `engine` clearly being defined in
+the file.
+
+**Investigation:** `db.py` internally does `from app.core.config import
+get_settings`, which assumes `app` is directly importable — true only
+when the working directory is `backend/` (matching how the app is meant
+to actually run: `uvicorn app.main:app --reload` from inside `backend/`).
+The Step 2 test command for `config.py` had instead been run from the
+repo root using a `backend.app.core...` prefix — that happened to work
+for `config.py` alone (no internal `app.xxx` imports) but silently broke
+for `db.py`, which does import that way internally.
+
+**Fix:** `cd backend` before running any ad-hoc import tests, matching
+the working directory the real server will run from.
+
+**Takeaway:** when a Python project's "run from here" directory matters
+(as it does whenever internal imports use a package-relative style like
+`app.xxx` instead of `backend.app.xxx`), ad-hoc test commands need to
+match that same working directory — testing from a different cwd than
+production can produce confusing, inconsistent import errors that look
+like a code bug but are actually a working-directory mismatch.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
