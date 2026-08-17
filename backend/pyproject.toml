@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+
+
+# E = style errors
+# F = unused imports/undefined names
+# B = common Python gotchas like mutable default args
+select = ["E", "F", "I", "B"]
+
