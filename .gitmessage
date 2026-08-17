@@ -1,0 +1,8 @@
+# <type>(<scope>): <short summary, imperative mood, ~50 chars>
+# |----|--------|--------------------------------------------------|
+
+# Why this change, not what (the diff already shows what). Wrap ~72 chars.
+
+
+# Types: feat | fix | refactor | docs | chore | test | style
+# Footer: issue refs, breaking changes, etc.
