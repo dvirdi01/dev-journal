@@ -199,6 +199,33 @@ going forward — invest effort in the parts that teach something or demo
 well (retrieval, structured queries, a real UI), and keep the rest as
 thin as possible rather than gold-plating plumbing no one will see.
 
+### 2026-08-16 — Learning: requirements.txt and `__init__.py` basics
+
+**Context:** First time setting up a Python backend from scratch (Phase 1,
+dependencies + config step) — both of these were new.
+
+**Learning — `requirements.txt`:** a plain text file listing the
+packages a project depends on (one per line, e.g. `fastapi`,
+`sqlalchemy>=2.0`), installed all at once with
+`pip install -r requirements.txt`. Split into two files here:
+`requirements.txt` (what the app needs to actually run — fastapi,
+uvicorn, sqlalchemy, alembic, pydantic-settings, anthropic, httpx) vs
+`requirements-dev.txt` (what only the developer needs — pytest, ruff).
+The split matters because a deployed server never needs a test runner or
+linter installed.
+
+**Learning — `__init__.py`:** an empty file placed in a folder to mark it
+as a Python *package*, which is what makes `from backend.app.core.config
+import get_settings`-style imports work across nested folders
+(`backend/app/__init__.py`, `backend/app/core/__init__.py`). Without it,
+Python may not reliably treat the folder as something importable — hit
+this directly when the first import attempt needed both files to exist
+before it worked.
+
+**Takeaway:** these are two of the "invisible scaffolding" pieces that
+tutorials often skip because they assume it — worth remembering neither
+was obvious coming in fresh.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
