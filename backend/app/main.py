@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
+from app.api import entries
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -13,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 # app object: uvicorn will look for this object to run the FastAPI application.
 app = FastAPI(title="dev-journal", version="0.1.0")
+
+
+app.include_router(entries.router, prefix="/entries", tags=["entries"])
 
 
 # Registers a function as a route handler for the GET method at the root URL ("/").

@@ -366,6 +366,77 @@ querying the SQLite file with stdlib `sqlite3` — collapses the
 abstraction fast and confirms the model/migration actually did what was
 intended.
 
+### 2026-08-17 — Learnings: service layer, FastAPI router, and a trailing-slash gotcha
+
+**Context:** Phase 3A — building `services/entries.py` and
+`api/entries.py`, the first endpoints that actually let entries be
+created/read over HTTP.
+
+**Bug hit — parameter/variable name mismatch caused a `NameError`:**
+`create_entry`'s parameter was named `entry` but the function body
+referenced `payload.model_dump()` — `payload` didn't exist, so calling it
+would have raised `NameError` at runtime. Even past the typo, reusing the
+same name (`entry`) for both the incoming `EntryCreate` and the resulting
+`Entry` ORM object would have been confusing to read. Fixed by naming the
+parameter `payload` throughout.
+
+**Design decision — `entry_type` should have a default, not be
+required:** `EntryCreate.entry_type` was briefly made required (no
+default), which would have forced every future `journal log` call to
+specify a type explicitly. Reverted to `entry_type: str = "note"` — most
+day-to-day logging is quick and uncategorized; explicit tagging
+(decision/bug/milestone/etc.) should be an opt-in override, not mandatory
+friction on the common case.
+
+**Learning — FastAPI dependency injection (`Depends`):** `Depends(get_db)`
+tells FastAPI to call `get_db()` before running the endpoint, hand the
+yielded session to the function, and clean it up after — automatically,
+per request. Removes the need to manually open/close a DB session inside
+every route.
+
+**Learning — `response_model` is separate from the function's actual
+return type:** route functions return raw SQLAlchemy `Entry` objects;
+`response_model=EntryRead` controls how FastAPI serializes that into
+JSON (via `EntryRead`'s `from_attributes`) and strips anything not
+defined on the schema — so a field could never accidentally leak over
+the API just because it exists on the DB model.
+
+**Learning — `""` vs `"/"` on a mounted router, and the 307-redirect
+gotcha:** with `router = APIRouter()` mounted via
+`app.include_router(entries.router, prefix="/entries")`, defining a route
+as `"/"` makes the real path `/entries/` — and FastAPI silently issues a
+307 redirect from `/entries` (no trailing slash) to `/entries/` to fix
+the mismatch. That's invisible in a browser but breaks CLI/HTTP clients
+that don't follow redirects by default. Using `""` instead of `"/"` for
+the router's base routes avoids the redirect entirely, since the real
+path becomes exactly `/entries`.
+
+**Takeaway:** the trailing-slash behavior is exactly the kind of subtle
+framework default that only surfaces once something calls the API
+non-interactively (like the future CLI) — worth remembering as a class
+of bug to watch for: things that "just work" in a browser can silently
+break for a script.
+
+### 2026-08-17 — Milestone: first entry created and retrieved over real HTTP
+
+**What happened:** `POST /entries` and `GET /entries` both work end to
+end for the first time — `curl` a raw note in, get back a fully
+persisted, structured row (auto-assigned `id`, `entry_type` defaulting
+to `"note"`, real timestamps), then `GET /entries` returns it in a JSON
+array straight from `dev_journal.db`.
+
+**Why this is the real milestone (not the migration, not the model):**
+this is the concrete thing that was actually promised back when deciding
+to build a real app instead of a markdown file — persistent, queryable
+storage reachable over HTTP, not something a flat file or a Claude skill
+could produce. Phase 3A is functionally done: create + list + get all
+work.
+
+**Takeaway:** everything before this (config, DB session, model, Alembic,
+service layer, router) was infrastructure in service of this one moment
+— worth remembering when the next phase's setup feels like "more
+plumbing before anything real happens" again.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?

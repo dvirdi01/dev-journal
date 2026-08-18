@@ -3,10 +3,14 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-
-
 # E = style errors
 # F = unused imports/undefined names
 # B = common Python gotchas like mutable default args
 select = ["E", "F", "I", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
+
+
+
 
