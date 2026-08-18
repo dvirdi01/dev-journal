@@ -1,1 +1,1 @@
-from app.models.entry import Entry
+from app.models.entry import Entry as Entry

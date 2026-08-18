@@ -8,6 +8,10 @@ __pycache__/
 
 .env
 
+# Local database (contains real journal entries — never commit)
+*.db
+*.db-journal
+
 # Distribution / packaging
 .Python
 build/
