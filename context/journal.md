@@ -284,6 +284,88 @@ should capture the "why," not the "what" — verbose paragraph explanations
 belong in a journal/commit message/PR description, not inline, both
 because they go stale and because they trip line-length linting.
 
+### 2026-08-17 — Learning: SQLAlchemy models + Pydantic schemas for building database entries
+
+**Context:** Phase 2, Steps 1-2 — first real database table (`Entry`) and
+its API request/response contracts.
+
+**Learning — SQLAlchemy 2.0 typed models:** `Mapped[str]` vs
+`Mapped[str | None]` in a type annotation is what tells SQLAlchemy
+`NOT NULL` vs nullable, and gives real editor autocomplete/type-checking
+in the process. `mapped_column()` is only needed when there's something
+to configure beyond the type — `primary_key=True` marks the ID column,
+`index=True` builds a DB-level lookup index (needed on `project` since
+that's what gets filtered on), `JSON` stores a Python list as encoded
+text (chosen over a separate tags table — simpler at this scale, no
+joins). `server_default=func.now()` is different from a plain Python
+`default=`: the former makes the *database* fill in the timestamp on
+insert (works even if some other tool writes to the table, bypassing
+Python entirely); `onupdate=func.now()` refreshes a column automatically
+on every update.
+
+**Learning — separate Pydantic schemas from the DB model:**
+`EntryCreate` (what a client sends in) and `EntryRead` (what the API
+sends back) are deliberately different, smaller classes than the full
+`Entry` table — not a straight reuse of the model. `EntryCreate` only
+asks for `raw_note`/`project`/`tags`, since the structured fields get
+filled in later by Claude, not by whoever's logging the note.
+`EntryRead` needs `model_config = ConfigDict(from_attributes=True)` to
+be built directly from a SQLAlchemy object's attributes instead of only
+from a plain dict.
+
+**Decision:** made `project` required (not nullable) in `EntryCreate`,
+diverging slightly from the original rough plan — since the DB column is
+`NOT NULL`, letting `None` through would surface as an ugly database
+error instead of FastAPI's clean 422 validation response.
+
+**Takeaway:** decoupling the API shape from the DB shape means the
+schema can evolve independently — e.g. an internal-only column added to
+`Entry` later won't leak over the API unless deliberately added to
+`EntryRead` too.
+
+### 2026-08-17 — Learning: Alembic upgrade/downgrade terminology, and peeking inside SQLite directly
+
+**Context:** Ran the first real migration (`alembic upgrade head`) and
+got confused about what "upgrade" and "entries table" actually meant.
+
+**Learning — "upgrade" is a schema operation, not a data operation:**
+Alembic's `upgrade`/`downgrade` change the *structure* of the database
+(create/drop tables, add/remove columns) — never rows of data. "create
+entries table" means the table named `entries` now exists; it says
+nothing about whether any journal entries (rows) exist inside it. Ran
+`alembic downgrade base` then `alembic upgrade head` back-to-back as a
+round-trip check — both directions worked cleanly.
+
+**Learning — where the database actually lives and how to look inside
+it:** SQLite has no server process; `dev_journal.db` is just a single
+file at `backend/dev_journal.db`, created the moment the first migration
+ran (didn't exist before). Peeked inside it directly with Python's
+built-in `sqlite3` module (no extra install needed):
+```python
+import sqlite3
+conn = sqlite3.connect("dev_journal.db")
+cur = conn.cursor()
+cur.execute("SELECT name FROM sqlite_master WHERE type='table'")  # list tables
+cur.execute("PRAGMA table_info(entries)")  # columns: cid, name, type, notnull, default, is_pk
+cur.execute("SELECT * FROM alembic_version")  # confirms which migration is currently applied
+```
+Confirmed: `entries` table has 0 rows (empty, as expected — nothing
+inserts data until Phase 3's API exists), and `alembic_version` holds
+exactly one row containing the migration ID `c15bab78e938`, which is the
+actual mechanism behind "Alembic knows what's been applied."
+
+**Bug caught along the way:** `dev_journal.db` wasn't in `.gitignore` —
+would have been committed to git on the next broad `git add`, and it'll
+eventually hold real personal journal entries that shouldn't be in
+version-control history. Added `*.db` and `*.db-journal` to
+`.gitignore` before this went any further.
+
+**Takeaway:** when a concept feels abstract (like "what does upgrading a
+schema even mean"), inspecting the raw artifact directly — here, just
+querying the SQLite file with stdlib `sqlite3` — collapses the
+abstraction fast and confirms the model/migration actually did what was
+intended.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
