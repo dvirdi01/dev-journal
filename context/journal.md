@@ -473,6 +473,205 @@ hierarchy the way it does in YAML/Python) — worth double-checking table
 order any time a new `[section]` gets added to `pyproject.toml`, not
 just trusting where it visually looks like it belongs.
 
+### 2026-08-18 — Learning: packaging a real installable CLI with `pyproject.toml`
+
+**Context:** Phase 4A, Steps 1-2 — starting the CLI, which (unlike
+`backend/`) needs to work as a command run from *any* directory,
+including inside other repos like Voltra.
+
+**Learning — why the CLI needs a `[project]` packaging section and
+`backend/` never did:** `backend/` is only ever run in place (`uvicorn
+app.main:app`, always from inside `backend/`), so it never needed to
+become an installable package. The CLI's entire point is running from
+arbitrary directories, which makes it a genuinely different category of
+thing — the same kind of artifact as `requests` or `typer` itself, not
+just more app code.
+
+**Learning — `[project.scripts]` is what creates the actual command:**
+```toml
+[project.scripts]
+journal = "journal_cli.main:app"
+```
+tells the packaging tool "install an executable named `journal` on PATH;
+running it calls the object `app` inside `journal_cli/main.py`." Works
+directly with a `Typer()` instance since Typer objects are callable —
+no wrapper function needed.
+
+**Learning — `[build-system]` boilerplate:** `requires = ["setuptools>=61.0"]`
++ `build-backend = "setuptools.build_meta"` just names which tool
+actually builds/installs the package — `setuptools` is the standard,
+unglamorous default, nothing exotic required for a project this size.
+
+**Learning — separate dependency list from `backend/requirements.txt`:**
+the CLI needs `typer`/`httpx`/`pydantic-settings` and has zero reason to
+depend on `fastapi`/`sqlalchemy`/`alembic` — genuinely separate programs
+sharing one repo, not one program split across folders.
+
+**Design decision — CLI config reads only real env vars, no `.env`
+file:** `backend/app/core/config.py` reads a `.env` sitting next to it
+because `uvicorn` always runs from a known location. The CLI has no such
+guarantee — it could run from Voltra, from `dev-journal`, from anywhere
+— so there's no reliable relative path to a `.env` file. It reads
+`DEV_JOURNAL_API_URL` from a real environment variable instead.
+
+**Nice trick worth reusing — `pydantic-settings`' `env_prefix`:** setting
+`env_prefix="DEV_JOURNAL_"` on a `BaseSettings` class means the `api_url`
+field reads from `DEV_JOURNAL_API_URL` (prefix + uppercased field name)
+instead of a bare `API_URL`. Namespacing env vars this way avoids ever
+colliding with some unrelated `API_URL` that might already be set in
+whatever shell the tool happens to run in — a real risk for anything
+meant to run in arbitrary environments/shells (like this CLI), much less
+of one for something like the backend that owns its own isolated `.env`.
+General pattern worth reaching for on any future CLI/tool that reads
+config from the environment rather than a known local file.
+
+### 2026-08-18 — Learning: `journal_cli` imports don't resolve until the package is actually installed
+
+**What happened:** `python -c "from journal_cli.config import get_settings; ..."`
+raised `ModuleNotFoundError: No module named 'journal_cli'` — expected,
+not a real bug, but worth logging as a procedural gotcha for next time.
+
+**Why:** unlike `backend/app/...`, which works as an import purely by
+virtue of being run with the right working directory (no install step,
+just cwd on `sys.path`), the CLI is being built as a genuine installable
+package (`cli/pyproject.toml`, Step 1). Nothing makes `journal_cli`
+importable — from any directory, including `cli/` itself — until it's
+actually installed with `pip install -e cli/`. Sanity-checking a CLI
+package's imports has one extra prerequisite step compared to the
+backend's app code.
+
+**Takeaway:** for this project going forward, any `journal_cli.*` import
+test needs `pip install -e cli/` to have already happened at least once
+in the active venv — remember this before assuming a fresh
+`ModuleNotFoundError` means broken code.
+
+### 2026-08-18 — Learning: `pip install -e` (editable install)
+
+**Context:** Installing the CLI package for the first time —
+`pip install -e cli/`.
+
+**Learning:** a normal `pip install` *copies* the package's files into
+the environment's `site-packages` at that moment — if you edit the
+source afterward, the installed copy doesn't change, you'd have to
+reinstall to pick up edits. `-e` (editable install, sometimes called a
+"develop install") instead links the environment directly to the source
+directory (`cli/journal_cli/`), so any edit to those `.py` files takes
+effect immediately the next time the command runs — no reinstall needed.
+
+**Why it matters here specifically:** the CLI is under active development
+(every step so far has involved editing `git_utils.py`/`client.py`/
+`main.py` repeatedly) — a non-editable install would mean re-running
+`pip install cli/` after every single change just to test it, which
+would slow down the exact "write it, test it immediately" loop this
+whole project has been following.
+
+**Takeaway:** `-e` is the standard choice for any package you're actively
+developing locally (this CLI, or dev-journal itself if it were ever
+pip-installed); a plain `pip install` is for consuming a finished,
+external package where you have no reason to expect the source to
+change underneath you.
+
+### 2026-08-18 — Roadblock: Typer silently drops the subcommand name when there's only one command
+
+**Problem:** first real run of the installed CLI —
+`journal log "testing the CLI for real"` — failed with `Got unexpected
+extra argument(s) (testing the CLI for real)`, even though `main.py`
+clearly defines `log` as a `@app.command()`.
+
+**Investigation:** Typer has a default behavior where a `Typer()` app
+with exactly *one* registered command auto-collapses — it stops
+requiring the subcommand name entirely, so the app is invoked as
+`journal "note text"` directly, not `journal log "note text"`. Since the
+CLI only had the single `log` command defined, Typer expected the bare
+form; `log` itself got parsed as the `note` argument, leaving the actual
+note text as an unexpected leftover argument.
+
+**Decision/fix:** rather than adopt the collapsed `journal "note"` form,
+added an empty `@app.callback()` right after `app = typer.Typer()`.
+Defining any top-level callback signals to Typer "this is a real
+multi-command group," which disables the auto-collapse even with just
+one command registered. Kept the explicit `journal log "..."` syntax on
+purpose — matches the roadmap's intended interface, and leaves room for
+future subcommands (e.g. a hypothetical `journal search`) without
+another syntax change later.
+
+**Takeaway:** a CLI framework's "helpful" default (fewer keystrokes for
+the common single-command case) can silently conflict with a
+deliberately-chosen interface — worth checking a framework's collapsing/
+shortcut defaults against the actual intended command shape before
+assuming a failing invocation means the code itself is wrong.
+
+### 2026-08-18 — Milestone: first real `journal log` command, end to end
+
+**What happened:** `journal log "testing the CLI for real"` — a real,
+installed, globally-available CLI command — successfully created and
+persisted an entry through the full stack: Typer parses the command,
+`git_utils.detect_project` auto-detects `project='dev-journal'` from the
+git remote, `client.create_entry` POSTs it over real HTTP to the running
+FastAPI backend, which writes it to `dev_journal.db`. Confirmed visible
+via `GET /entries` and FastAPI's auto-generated `/docs` UI.
+
+**Why this matters:** this is the actual "usable with Voltra" bar being
+crossed — everything from Phase 1 onward (config, DB session, model,
+migrations, service layer, router, and now this installable CLI) was
+infrastructure in service of this one command working from an arbitrary
+directory. Cross-repo detection itself is still unverified against a
+real second repo (Voltra) — that's the next concrete test.
+
+**Takeaway:** worth noting how many distinct pieces had to be correct
+simultaneously for this to work (packaging, dependency injection, git
+subprocess calls, HTTP client, database session lifecycle) — a good
+one-line answer to "what does this project actually demonstrate" for a
+portfolio context.
+
+### 2026-08-18 — Learning: FastAPI auto-generates interactive API docs for free
+
+**Finding:** `http://127.0.0.1:8000/docs` serves a full interactive UI
+(Swagger UI) listing every route the app defines — `/health`,
+`POST /entries`, `GET /entries`, `GET /entries/{id}` — generated
+automatically from the FastAPI app and its Pydantic schemas, no extra
+code or config written for it. Each endpoint can be expanded and
+actually called from the browser (fill in a form, hit "Execute," see
+the real response), which is a much faster way to poke at the API than
+constructing `curl`/`curl.exe` commands by hand.
+
+**Why it works with zero setup:** FastAPI derives the whole docs page
+from things that already exist for other reasons — the route
+decorators, the `response_model`s, and the Pydantic schemas' field
+types/validation. It's a side effect of writing typed, schema-driven
+code, not a separate thing to build or maintain.
+
+**Takeaway:** worth reaching for `/docs` as the default way to manually
+poke at the API going forward, instead of `curl.exe` — faster, shows
+request/response shapes directly, and doubles as living documentation
+for anyone else looking at the project (nice thing to point to for the
+portfolio angle too).
+
+### 2026-08-18 — Milestone: cross-repo capture verified for real, from Voltra
+
+**What happened:** ran `journal log "some real note about Voltra"` from
+inside the actual Voltra repo (`C:\Users\virdi\OneDrive\Desktop\Volentia\voltra`,
+a completely different folder tree from `dev-journal`), with the
+`dev-journal` backend running separately. Auto-detection correctly
+resolved `project='voltra'` from git with no `--project` flag needed,
+and the entry (`#3`) landed in `dev-journal/backend/dev_journal.db` —
+confirming the CLI's install (in the `dev-journal` venv) is fully
+decoupled from Voltra's own dependencies/venv, and that `git_utils.py`'s
+read-only git calls don't touch Voltra's repo state at all.
+
+**Why this is the actual milestone, not just another test:** this is the
+literal hard requirement that shaped Phase 4A's entire design from the
+start — the CLI needed to work from inside other codebases, not just
+dev-journal itself. Everything from the package-not-just-script decision
+(`cli/pyproject.toml`, `pip install -e`) through the git auto-detection
+logic was built specifically to make this moment possible. It's now
+verified against the real target project, not a hypothetical.
+
+**Takeaway:** the "usable with Voltra" bar set all the way back when
+scoping the roadmap is now actually crossed — dev-journal can capture
+real entries while working in Voltra today, even before Claude
+structuring (3B) or search (3C) exist.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?

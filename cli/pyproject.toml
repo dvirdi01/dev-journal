@@ -1,0 +1,27 @@
+# this makes the CLI an installable Python package
+# and lets journal work as a command from any directory
+
+# this becomes a separate installable package
+[project]
+name = "dev-journal-cli"
+version= "0.1.0"
+requires-python =">=3.12"
+dependencies = [
+    "typer",
+    "httpx", 
+    "pydantic-settings",
+]
+
+# this section creates the journal command 
+# it tells Python's packaging tools that when this package gets installed, 
+# create an executable called journal on the user's PATH and when it runs
+# call the object app inside journal_cli/main.py 
+[project.scripts]
+journal = "journal_cli.main:app"
+
+# boilerplate telling pip which tool to actually build/install this package. 
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
