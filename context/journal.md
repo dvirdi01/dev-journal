@@ -437,6 +437,42 @@ service layer, router) was infrastructure in service of this one moment
 — worth remembering when the next phase's setup feels like "more
 plumbing before anything real happens" again.
 
+### 2026-08-17 — Learnings: ruff's B008 false positive on `Depends`, and a TOML table-ordering bug
+
+**Context:** Closing out Phase 3A — running `ruff check .` on the new
+router.
+
+**Learning — `B008` flags `Depends(...)` as the mutable-default-argument
+bug, but it isn't one:** `B008` (flake8-bugbear) normally protects
+against a real Python gotcha — default argument values are evaluated
+*once*, at function-definition time, not per call (the classic `def
+f(x=[])` trap). `Depends(get_db)` looks like that pattern but isn't:
+FastAPI inspects the function signature itself and calls `get_db()`
+fresh on every request — it's the intended, idiomatic way to write
+FastAPI routes, used throughout FastAPI's own docs. Fixed by telling
+ruff to treat it as safe rather than suppressing the warning line by
+line:
+```toml
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
+```
+
+**Bug hit — TOML table headers aren't nesting brackets:** adding the
+section above (placed *before* the existing `select = [...]` line, with
+no explicit `[tool.ruff.lint]` header of its own) broke parsing:
+`unknown field 'select', expected 'extend-immutable-calls'`. In TOML,
+every key after a `[table.header]` belongs to that table until the next
+header appears, regardless of indentation — so `select` was being read
+as a field of `flake8-bugbear`, not of `tool.ruff.lint`. Fixed by adding
+an explicit `[tool.ruff.lint]` header before `select`, with the
+`flake8-bugbear` sub-table placed after it.
+
+**Takeaway:** TOML's flat, order-dependent table scoping is genuinely
+different from how nesting reads visually (indentation doesn't establish
+hierarchy the way it does in YAML/Python) — worth double-checking table
+order any time a new `[section]` gets added to `pyproject.toml`, not
+just trusting where it visually looks like it belongs.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
