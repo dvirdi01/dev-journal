@@ -284,6 +284,45 @@ should capture the "why," not the "what" — verbose paragraph explanations
 belong in a journal/commit message/PR description, not inline, both
 because they go stale and because they trip line-length linting.
 
+### 2026-08-17 — Learning: SQLAlchemy models + Pydantic schemas for building database entries
+
+**Context:** Phase 2, Steps 1-2 — first real database table (`Entry`) and
+its API request/response contracts.
+
+**Learning — SQLAlchemy 2.0 typed models:** `Mapped[str]` vs
+`Mapped[str | None]` in a type annotation is what tells SQLAlchemy
+`NOT NULL` vs nullable, and gives real editor autocomplete/type-checking
+in the process. `mapped_column()` is only needed when there's something
+to configure beyond the type — `primary_key=True` marks the ID column,
+`index=True` builds a DB-level lookup index (needed on `project` since
+that's what gets filtered on), `JSON` stores a Python list as encoded
+text (chosen over a separate tags table — simpler at this scale, no
+joins). `server_default=func.now()` is different from a plain Python
+`default=`: the former makes the *database* fill in the timestamp on
+insert (works even if some other tool writes to the table, bypassing
+Python entirely); `onupdate=func.now()` refreshes a column automatically
+on every update.
+
+**Learning — separate Pydantic schemas from the DB model:**
+`EntryCreate` (what a client sends in) and `EntryRead` (what the API
+sends back) are deliberately different, smaller classes than the full
+`Entry` table — not a straight reuse of the model. `EntryCreate` only
+asks for `raw_note`/`project`/`tags`, since the structured fields get
+filled in later by Claude, not by whoever's logging the note.
+`EntryRead` needs `model_config = ConfigDict(from_attributes=True)` to
+be built directly from a SQLAlchemy object's attributes instead of only
+from a plain dict.
+
+**Decision:** made `project` required (not nullable) in `EntryCreate`,
+diverging slightly from the original rough plan — since the DB column is
+`NOT NULL`, letting `None` through would surface as an ugly database
+error instead of FastAPI's clean 422 validation response.
+
+**Takeaway:** decoupling the API shape from the DB shape means the
+schema can evolve independently — e.g. an internal-only column added to
+`Entry` later won't leak over the API unless deliberately added to
+`EntryRead` too.
+
 ### Open Questions / To Revisit
 
 - How much autonomy before requiring confirmation on auto-structuring entries?
