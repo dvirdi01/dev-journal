@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 # rest gets filled in later with claude
 class EntryCreate(BaseModel):
     raw_note: str
+    entry_type: str = "note"
     project: str
     tags: list[str] | None = None
 
@@ -21,6 +22,7 @@ class EntryRead(BaseModel):
 
     id: int
     raw_note: str
+    entry_type: str
     context: str | None = None
     problem: str | None = None
     investigation: str | None = None
