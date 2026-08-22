@@ -720,3 +720,87 @@ this first time; it will auto-apply to every PR after this one merges to
 workflows) only takes effect from the default branch — always ask "is
 this file actually merged to main yet?" before assuming GitHub picked it
 up.
+
+### 2026-08-22 — Decision: prioritize Phase 3B/3C over CLI installability
+
+**Context:** Was mid-discussion on making the `journal` CLI installable by
+anyone via `pip`/`pipx` straight from GitHub (`pip install
+git+https://github.com/dvirdi01/dev-journal.git#subdirectory=cli`), which
+is mechanically real but only solves distribution — a stranger installing
+it still hits a `ConnectError` immediately since the CLI is hardwired to
+`127.0.0.1:8000` and there's no backend for them to talk to
+([config.py](../cli/journal_cli/config.py)).
+
+**Decision:** Deprioritize CLI installability/packaging polish. Prioritize
+finishing retrieval — Phase 3B (Claude structuring: raw note → structured
+entry) and 3C (query/search) — instead.
+
+**Why:** The project's actual LinkedIn engagement hook isn't "you can pip
+install my CLI" (most viewers won't install anything regardless of
+polish) — it's Phase 5's planned scaling-wall comparison: a concrete
+measured claim (context-stuffing cost vs. retrieval cost once real
+entries exist). That comparison needs real structured entries and a
+working query path first, which 3B/3C provide and installability doesn't.
+
+**Tradeoff accepted:** the repo stays a personal-only tool (single
+hardcoded backend URL, no auth/multi-tenant story) for now — fine for a
+portfolio/LinkedIn demo, revisit only if the goal shifts to real external
+users.
+
+**Takeaway:** when scoping a portfolio project, weigh each next step by
+"does this strengthen the actual content/demo story" rather than
+generic "more professional/polished" instincts — installability felt
+like the more impressive next step but wasn't the one that produces the
+post.
+
+### 2026-08-22 — Decision: system prompt design and model choice for Claude structuring (Phase 3B)
+
+**Context:** Building `structure_note()` in
+[claude_structuring.py](../backend/app/services/claude_structuring.py),
+which turns a raw CLI note into the `StructuredFields` (context/problem/
+investigation/fix/takeaway) via `client.messages.parse(...,
+output_format=StructuredFields)`.
+
+**Decision — system prompt:** Went beyond a generic "extract structure"
+instruction to explicitly spell out what each of the six `entry_type`
+values means (note/decision/bug/milestone/learning/question), plus a
+terseness/no-fabrication rule ("leave a field null rather than guessing
+or padding it out... do not invent detail, backstory, or elaboration the
+note doesn't contain").
+
+**Why:** Real notes logged via `journal log` are short CLI one-liners,
+not paragraphs. Without the entry_type vocabulary, Claude had no signal
+for which fields a given type should even plausibly fill (e.g. a
+`decision` entry has no real `investigation`); without the terseness
+rule, a one-line note risked getting an inflated, partly-invented
+`context` paragraph just to fill space. Per-field Pydantic `Field(...,
+description=...)` text is also sent to Claude as part of the JSON
+schema (via `output_format`), so those descriptions already do some of
+this work — the system prompt adds the type-vocabulary and
+anti-fabrication framing that individual field descriptions can't.
+
+**Decision — model:** Chose Claude Sonnet 5 over Opus 5 (skill default)
+and Haiku 4.5 for `structure_note()`.
+
+**Why:** This call runs synchronously inside `POST /entries`, which the
+CLI blocks on — so its latency is directly felt as "how long does
+`journal log` take to return." It's also a bounded extraction task
+(short note in, five short fields out), not open-ended reasoning, so
+Opus 5's extra adaptive-thinking cost buys little here. Sonnet 5 is the
+middle point: still strong at classification/extraction, meaningfully
+faster/cheaper than Opus for a per-call latency the user feels every
+time.
+
+**Follow-up planned:** Pull the model string into a `_MODEL` constant
+and add `time.perf_counter()` timing around the API call (log on both
+success and failure) — not for this call alone, but so that later,
+swapping `_MODEL` between Sonnet 5 / Opus 5 / Haiku 4.5 and re-running
+the same notes gives a ready-made latency (and failure-rate) comparison
+table. This extends Phase 5's planned "scaling wall" LinkedIn post to
+also cover a model-tier tradeoff, not just context-stuffing vs.
+retrieval.
+
+**Takeaway:** cheap instrumentation (one timing constant + one log line)
+added at build time can turn a future one-off experiment into "just
+read the logs" — worth doing whenever the future comparison is already
+foreseeable, not just when you're about to run it.
