@@ -915,3 +915,72 @@ technical fix for an adjacent problem (segmentation) create false
 confidence that the hard part is solved too. Sequencing manual-first and
 gathering real evidence of a gap is cheaper than building speculative
 infrastructure for a problem that might not exist in practice.
+
+### 2026-08-22 — Bug: `/journal` custom command not registering — `allowed-tools` colon syntax invalid
+
+**Context:** Built a `/journal` Claude Code slash command
+([`.claude/commands/journal.md`](../.claude/commands/journal.md)) that
+drafts a journal entry from recent conversation context and, after user
+confirmation, runs `journal log` — a manual, lower-friction alternative
+to typing a full summary by hand (chosen over automatic session/hook
+capture, see the decision above).
+
+**Learning — custom commands vs. Skills:** Claude Code's official docs
+state commands and Skills are unified, not one deprecating the other:
+*"Custom commands have been merged into skills. A file at
+`.claude/commands/deploy.md` and a skill at
+`.claude/skills/deploy/SKILL.md` both create `/deploy` and work the same
+way. Your existing `.claude/commands/` files keep working."* Didn't know
+this — assumed the flat-file `.claude/commands/<name>.md` format might
+be legacy-only; it's current, documented, first-class.
+
+**Problem:** After creating the file (and fixing an initial unrelated
+mistake — the folder was named `claude/` instead of `.claude/`),
+`/journal` still returned "no matching commands" in a brand new session,
+even though other built-in slash commands worked fine.
+
+**Investigation:** The frontmatter had
+`allowed-tools: Bash(journal:*)` — a colon-separated pattern. Checked
+official docs again: the documented `allowed-tools` glob syntax is
+**space**-separated (`Bash(git add *)`, `Bash(git commit *)`), not
+colon-separated. Invalid/unrecognized frontmatter appears to make
+Claude Code silently skip loading the whole command file — no visible
+parse error, it just doesn't show up.
+
+**Fix:** Changed to `allowed-tools: Bash(journal *)` (space instead of
+colon), matching the documented pattern shape.
+
+**Takeaway:** when a Claude Code custom command silently fails to
+register, suspect frontmatter syntax first — invalid YAML or an
+undocumented pattern shape fails closed with no error message, which
+looks identical to "file not found" or "wrong location" from the
+outside. Worth checking the exact documented examples (not inferring
+syntax from adjacent tools' conventions) before assuming a location or
+naming problem.
+
+**Update — the syntax fix wasn't the actual root cause.** After fixing
+`allowed-tools` and restarting VSCode fully, `/journal` *still* didn't
+register — and neither did a trivial zero-frontmatter test command
+(`.claude/commands/hello.md`, no `---` block at all), which ruled out
+`journal.md`'s content entirely. Root cause: **the VSCode Claude Code
+extension's chat panel doesn't read `.claude/commands/` at all — only
+the standalone `claude` CLI does.** Confirmed by installing the CLI
+(`npm install -g @anthropic-ai/claude-code`, not previously installed on
+this machine — only the extension was present) and running `/hello` in
+a terminal `claude` session, where it worked immediately.
+
+**Resolution:** ran `/journal` in the standalone CLI terminal session —
+it registered, drafted a note from recent conversation context, waited
+for explicit confirmation as designed, and on confirming created entry
+#6. First successful end-to-end run of the manual-capture design from
+the decision above.
+
+**Takeaway (extending the one above):** when a Claude Code feature
+seems to not work despite correct files/syntax/location, consider that
+the VSCode extension and the standalone CLI may not have full feature
+parity — they're not guaranteed to be the same implementation moving in
+lockstep. A trivial, content-free reproduction (the `hello.md` test)
+isolated this far faster than continuing to debug `journal.md`'s
+content would have. Going forward, `/journal` (and any future custom
+commands) needs to be run from a terminal `claude` session, not this
+VSCode chat panel.
