@@ -1128,3 +1128,25 @@ swallow it), and syncing the test fixture in `test_entries.py` — it
 builds tables via `Base.metadata.create_all()`, which never runs Alembic
 migrations, so `entries_fts` won't exist there until `FTS_SETUP_SQL` is
 also executed against the test DB.
+
+### 2026-08-22 — Gotcha: FastAPI route ordering — `/{entry_id}` would swallow `/search`
+
+**Problem (caught before writing the code, not after):** `entries.py`'s
+existing routes are `POST /entries`, `GET /entries`, then
+`GET /entries/{entry_id}`, in that order. Adding `GET /entries/search`
+*after* `{entry_id}` would break it — FastAPI/Starlette match routes in
+registration order and stop at the first match, and `{entry_id}` is a
+path parameter that matches any single segment, including the literal
+string `"search"`. A request to `/entries/search?q=timeout` would hit
+`get_entry` first, with FastAPI trying (and failing) to parse `"search"`
+as `entry_id: int`, never reaching the actual search logic.
+
+**Fix:** register the new `/search` route *before*
+`@router.get("/{entry_id}")` in the file — plain literal paths need to
+come before parameterized ones that could shadow them.
+
+**Takeaway:** any time a new route is added to a router that already has
+a `/{param}` catch-all-shaped route, check registration order first —
+this class of bug is silent until the specific overlapping path is
+actually requested, so it's cheap to get right upfront and easy to miss
+in review otherwise.

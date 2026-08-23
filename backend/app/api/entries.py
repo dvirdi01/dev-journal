@@ -20,6 +20,10 @@ def list_entries(project: str | None = None, db: Session = Depends(get_db)):
     return entries_service.list_entries(db, project)
 
 
+@router.get("/search", response_model=list[EntryRead])
+def search_entries(q: str, project: str | None = None, db: Session = Depends(get_db)):
+    return entries_service.search_entries(db, q, project)
+
 @router.get("/{entry_id}", response_model=EntryRead)
 def get_entry(entry_id: int, db: Session = Depends(get_db)):
     entry = entries_service.get_entry(db, entry_id)

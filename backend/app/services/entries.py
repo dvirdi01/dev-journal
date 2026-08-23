@@ -29,9 +29,6 @@ def list_entries(db: Session, project: str | None = None) -> list[Entry]:
     return query.order_by(Entry.created_at.desc()).all()
 
 
-def get_entry(db: Session, entry_id: int) -> Entry | None:
-    return db.get(Entry, entry_id)
-
 def search_entries(db: Session, q: str, project: str | None = None) -> list[Entry]:
     sql = "SELECT entries.* FROM entries JOIN entries_fts ON entries.id = entries_fts.rowid WHERE entries_fts MATCH :q"
     params = {"q": q}
@@ -42,3 +39,8 @@ def search_entries(db: Session, q: str, project: str | None = None) -> list[Entr
 
     rows = db.execute(text(sql), params).mappings().all()
     return [db.get(Entry, row["id"]) for row in rows]
+
+def get_entry(db: Session, entry_id: int) -> Entry | None:
+    return db.get(Entry, entry_id)
+
+
