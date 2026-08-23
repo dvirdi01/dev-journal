@@ -804,3 +804,39 @@ retrieval.
 added at build time can turn a future one-off experiment into "just
 read the logs" — worth doing whenever the future comparison is already
 foreseeable, not just when you're about to run it.
+
+### 2026-08-22 — Bug: CLI's `httpx.post` default timeout too short for a Claude-backed endpoint
+
+**Problem:** After wiring `structure_note()` into `create_entry()` (Phase
+3B) and adding a real `ANTHROPIC_API_KEY`, running `journal log "..."`
+threw `httpx.ReadTimeout` in the CLI with a full traceback, even though
+nothing about the request itself was wrong.
+
+**Investigation:** Checked the backend's own terminal output (the
+running `uvicorn` process) rather than assuming the request had failed
+server-side:
+```
+INFO:httpx:HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO:app.services.claude_structuring:Claude structuring ok model=claude-sonnet-5 duration=5.69s
+```
+The Claude call succeeded in 5.69s and the entry committed to the DB
+fine (confirmed via `GET /entries` — entry #4 existed with real
+structured fields). The CLI's `httpx.post(...)` call in
+[client.py](../cli/journal_cli/client.py), however, passed no `timeout`
+argument, so `httpx` used its default — 5 seconds total. The CLI gave up
+and raised client-side one moment before the backend would have replied.
+
+**Fix:** Added `timeout=30.0` to the `httpx.post(...)` call in
+`client.py` — comfortable headroom above the measured 5.69s, including
+room for the model to later be swapped to Opus 5 (likely slower) for the
+Phase 5 model-latency comparison without the CLI falsely reporting
+failure on a request that actually succeeded.
+
+**Takeaway:** `httpx`'s 5s default timeout is fine for a typical
+CRUD-style REST endpoint but was never designed around "this endpoint
+makes a real LLM call before replying" — any client hitting an
+LLM-backed endpoint needs its timeout raised explicitly, since default
+HTTP client timeouts assume millisecond-scale responses. Also: when a
+client-side exception fires, check the *server's* logs before assuming
+the request failed — the backend can succeed while the client alone
+gives up.

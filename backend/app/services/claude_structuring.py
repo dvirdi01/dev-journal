@@ -49,7 +49,7 @@ _MODEL = "claude-sonnet-5"
 
 def structure_note(raw_note: str, entry_type: str) -> StructuredFields | None:
     # builds a client using the key from my .env
-    client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
+    client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key or None)
 
     start = time.perf_counter()
     try:

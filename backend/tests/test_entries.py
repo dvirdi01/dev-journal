@@ -11,7 +11,10 @@ from app.main import app
 # any test that takes client as a param automatically
 # gets whatever this fixture yields.
 @pytest.fixture
-def client():
+def client(monkeypatch):
+
+    monkeypatch.setattr("app.services.entries.structure_note", lambda raw_note, entry_type: None)
+
     # Create an in-memory SQLite database for testing
     engine = create_engine(
         "sqlite:///:memory:",
