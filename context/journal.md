@@ -984,3 +984,92 @@ isolated this far faster than continuing to debug `journal.md`'s
 content would have. Going forward, `/journal` (and any future custom
 commands) needs to be run from a terminal `claude` session, not this
 VSCode chat panel.
+
+### 2026-08-22 — Decision: work primarily from the terminal `claude` CLI going forward
+
+**Context:** With `/journal` confirmed only runnable from the terminal
+CLI (not the VSCode extension panel), a new problem surfaced: the actual
+debugging/decision conversations for this project have been happening
+*in the VSCode extension panel* (this session). A `/journal` invocation
+from a fresh terminal session has no "recent conversation" to draw
+from — its whole design assumes it's running in the same session where
+the work happened.
+
+**Investigated:** whether `claude --resume` from a terminal could
+reopen *this exact* VSCode session, giving a terminal-driven `/journal`
+call access to this session's full history. Docs (checked via research
+agent) stated: *"The extension and CLI share the same conversation
+history"* — implying this should work.
+
+**Empirically disproven:** Ran `claude --resume` in a terminal — the
+picker showed only two sessions, and this session (auto-titled "project
+stage check" in the VSCode panel) was not among them. Confirmed further
+by resuming both listed sessions and asking each a fact stated
+explicitly in *this* conversation (the $5 prepaid API credit,
+auto-reload off) — neither knew it; one explicitly said it had no
+access to that information. So despite what the docs claim, this
+specific VSCode session is not reachable from the terminal CLI's resume
+mechanism in this setup — the practical reality contradicted the
+documented claim.
+
+**Decision:** Use the terminal `claude` CLI as the primary workspace
+for development work going forward, not the VSCode extension panel.
+Reasoning: `/journal`'s core design (drafting from "recent
+conversation") only holds when the debugging/decision work and the
+`/journal` invocation happen in the same session — which is only
+reliably true within one interface. The terminal CLI supports both
+custom commands *and* same-interface session resumption; the VSCode
+panel supports neither for this purpose. This current conversation
+stays as the historical record up to this point; it does not carry
+forward automatically.
+
+**Tradeoff accepted:** losing whatever VSCode-panel-specific ergonomics
+existed (inline diffs, IDE integration, etc. — not deeply evaluated) in
+exchange for `/journal` actually working as designed on new work,
+without falling back to manually retyping summaries (Option B,
+considered and rejected as mostly defeating the point of building the
+command).
+
+**Takeaway:** a documented claim about cross-interface feature parity
+(the "shared conversation history" claim) turned out not to hold in
+practice — worth remembering generally: even docs-verified research
+(useful and necessary, per the hooks/commands research earlier) can
+still be wrong or environment-dependent, and a direct empirical test
+(try it, ask a fact only the real session would know) is the actual
+tie-breaker when documented behavior and observed behavior disagree.
+
+### 2026-08-22 — Learning: Claude Code has no passive visibility into other terminals, and a "journal" naming collision
+
+**Learning — no passive terminal visibility:** confirmed (asked
+directly, in the new terminal `claude` session) that Claude Code cannot
+see output from a separate terminal window/process — e.g. an error in
+the PowerShell tab running `uvicorn` isn't visible unless it's pasted in
+manually, or the command is re-run through Claude's own tool calls
+instead. Relevant now that the standard workflow is two terminals side
+by side (one running the backend, one running `claude`) — errors in the
+backend terminal need to be copy-pasted over, not assumed visible.
+
+**Learning — "journal" is an overloaded term in this project, causing
+real confusion:** saying "log this finding" in the terminal session
+(intending "add this to `context/journal.md`") instead triggered the
+`/journal` slash command's structured-DB-entry flow (draft
+raw_note/entry_type → `journal log` → SQLite row) — because "journal
+entry" genuinely means two different things here: an edit to this
+markdown build-log file, vs. a row in the app's own `Entry` table. The
+`/journal` command's existence makes "log this"/"journal entry" default
+toward the DB-write interpretation, not the file-edit one, since that's
+the more recently-discussed meaning in a session that's been testing
+`/journal`.
+
+**Resolution for now:** be explicit about which one is meant — e.g. "add
+this to `journal.md`" vs. "log this via `/journal`" — rather than relying
+on "log this" alone. No renaming done yet; worth considering later
+if the ambiguity keeps causing friction (e.g. renaming the CLI/command
+to something like `entry` or `dj-log` to free up "journal" for referring
+unambiguously to `journal.md`).
+
+**Takeaway:** naming two related-but-distinct things in a project with
+overlapping vocabulary ("journal" for both the human build-log and the
+app's own core noun) creates exactly this kind of ambiguity — worth
+choosing more distinct terms earlier, though not disruptive enough here
+to warrant a rename mid-build.
