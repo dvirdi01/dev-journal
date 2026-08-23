@@ -840,3 +840,78 @@ HTTP client timeouts assume millisecond-scale responses. Also: when a
 client-side exception fires, check the *server's* logs before assuming
 the request failed — the backend can succeed while the client alone
 gives up.
+
+### 2026-08-22 — Decision: park automatic session-capture, build a manual `/journal` command instead
+
+**Context:** Explored whether the CLI could auto-capture *how* a bug was
+actually debugged (via Claude Code, manually, or another agent CLI)
+instead of requiring the user to type a summary by hand — the concern
+being that manual note-typing risks making the tool no better than
+pasting into a personal notes app.
+
+**Research (verified against official docs, not blog sources):**
+Claude Code hooks can technically do this — `SessionEnd` fires once per
+session with a `transcript_path` to the full JSONL conversation, and a
+hook can shell out to run `journal log` with real content
+(`~/.claude/settings.json` or project `.claude/settings.json`; hooks
+block execution up to a configurable timeout, default 1.5s, up to 60s
+max — not fire-and-forget).
+
+**Why rejected as the primary mechanism (two separate problems found):**
+1. **"Session" ≠ "one topic."** A Claude Code session is tied to
+   process lifetime, not topic boundaries — this user's actual pattern
+   is one long-running session that's rarely if ever closed, covering
+   many unrelated bugs/decisions/learnings over days. `SessionEnd`
+   would almost never fire, and when it did, would bundle everything
+   into one undifferentiated blob rather than the separate entries
+   actually wanted.
+2. **Segmentation (splitting a transcript into multiple entries) is a
+   solvable schema problem, but it doesn't solve the deeper one:
+   significance.** An automatic extractor has no concept of what's
+   *worth* logging vs. noise — e.g. entry #4
+   (`"testing after claude restructuring"`) was itself a throwaway test
+   note that still produced an entry. The manual "log this" pattern
+   used throughout this session's actual work implicitly filters
+   signal from noise for free, because a human is choosing the moment;
+   full automation would need to independently solve that judgment
+   call, which is the actual hard, unsolved part of the feature — not
+   a v1-vs-v2 detail.
+
+**Decision:** Build a manual `/journal` Claude Code slash command next
+(pulls minimal recent context, calls the existing structuring pipeline,
+logs one entry) — preserves the human significance-judgment for free,
+and is mostly wiring on top of what's already built (Phase 3B). Extend
+`structure_note()`/`output_format` to return a *list* of entries rather
+than one, since even a manual invocation may cover several topics in
+one note.
+
+**Idea documented but explicitly deferred — a "significance detector":**
+instead of asking an LLM "is this important" (too vague, reproduces the
+noise problem), use concrete signal proxies a hook can actually observe
+— e.g. a `PreToolUse`/`PostToolUse` pattern of bash failing, retrying,
+then succeeding (a bug fought and fixed); a git commit landing; the same
+file/error recurring across many tool calls. Surface high-confidence
+matches as a one-keystroke terminal confirm ("looks like you just fixed
+X — log it? y/n"), not silent auto-logging — keeps the human as final
+gate while removing the burden of remembering to invoke `/journal`
+manually.
+
+**Why this is deferred, not scoped in now:** it requires real
+cross-invocation state Claude Code hooks don't provide natively (each
+hook firing is stateless — detecting "3 failed attempts then success"
+means building and maintaining an external rolling log of tool-call
+outcomes ourselves, on every tool call, every session). And the proxy
+signals are themselves an imperfect heuristic, not a solved version of
+significance (a bash retry is often just a typo, not a real debugging
+struggle) — this would be its own multi-iteration tuning project,
+comparable in effort to everything built so far, sitting on top of a
+`/journal` command that doesn't exist yet. Revisit only with real
+evidence after `/journal` ships — e.g. repeatedly noticing "I wish I'd
+logged that" after the fact — not preemptively.
+
+**Takeaway:** when a feature's "automatic" version requires solving a
+genuinely fuzzy judgment call (here: significance), don't let a clean
+technical fix for an adjacent problem (segmentation) create false
+confidence that the hard part is solved too. Sequencing manual-first and
+gathering real evidence of a gap is cheaper than building speculative
+infrastructure for a problem that might not exist in practice.
