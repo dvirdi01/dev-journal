@@ -720,3 +720,485 @@ this first time; it will auto-apply to every PR after this one merges to
 workflows) only takes effect from the default branch — always ask "is
 this file actually merged to main yet?" before assuming GitHub picked it
 up.
+
+### 2026-08-22 — Decision: prioritize Phase 3B/3C over CLI installability
+
+**Context:** Was mid-discussion on making the `journal` CLI installable by
+anyone via `pip`/`pipx` straight from GitHub (`pip install
+git+https://github.com/dvirdi01/dev-journal.git#subdirectory=cli`), which
+is mechanically real but only solves distribution — a stranger installing
+it still hits a `ConnectError` immediately since the CLI is hardwired to
+`127.0.0.1:8000` and there's no backend for them to talk to
+([config.py](../cli/journal_cli/config.py)).
+
+**Decision:** Deprioritize CLI installability/packaging polish. Prioritize
+finishing retrieval — Phase 3B (Claude structuring: raw note → structured
+entry) and 3C (query/search) — instead.
+
+**Why:** The project's actual LinkedIn engagement hook isn't "you can pip
+install my CLI" (most viewers won't install anything regardless of
+polish) — it's Phase 5's planned scaling-wall comparison: a concrete
+measured claim (context-stuffing cost vs. retrieval cost once real
+entries exist). That comparison needs real structured entries and a
+working query path first, which 3B/3C provide and installability doesn't.
+
+**Tradeoff accepted:** the repo stays a personal-only tool (single
+hardcoded backend URL, no auth/multi-tenant story) for now — fine for a
+portfolio/LinkedIn demo, revisit only if the goal shifts to real external
+users.
+
+**Takeaway:** when scoping a portfolio project, weigh each next step by
+"does this strengthen the actual content/demo story" rather than
+generic "more professional/polished" instincts — installability felt
+like the more impressive next step but wasn't the one that produces the
+post.
+
+### 2026-08-22 — Decision: system prompt design and model choice for Claude structuring (Phase 3B)
+
+**Context:** Building `structure_note()` in
+[claude_structuring.py](../backend/app/services/claude_structuring.py),
+which turns a raw CLI note into the `StructuredFields` (context/problem/
+investigation/fix/takeaway) via `client.messages.parse(...,
+output_format=StructuredFields)`.
+
+**Decision — system prompt:** Went beyond a generic "extract structure"
+instruction to explicitly spell out what each of the six `entry_type`
+values means (note/decision/bug/milestone/learning/question), plus a
+terseness/no-fabrication rule ("leave a field null rather than guessing
+or padding it out... do not invent detail, backstory, or elaboration the
+note doesn't contain").
+
+**Why:** Real notes logged via `journal log` are short CLI one-liners,
+not paragraphs. Without the entry_type vocabulary, Claude had no signal
+for which fields a given type should even plausibly fill (e.g. a
+`decision` entry has no real `investigation`); without the terseness
+rule, a one-line note risked getting an inflated, partly-invented
+`context` paragraph just to fill space. Per-field Pydantic `Field(...,
+description=...)` text is also sent to Claude as part of the JSON
+schema (via `output_format`), so those descriptions already do some of
+this work — the system prompt adds the type-vocabulary and
+anti-fabrication framing that individual field descriptions can't.
+
+**Decision — model:** Chose Claude Sonnet 5 over Opus 5 (skill default)
+and Haiku 4.5 for `structure_note()`.
+
+**Why:** This call runs synchronously inside `POST /entries`, which the
+CLI blocks on — so its latency is directly felt as "how long does
+`journal log` take to return." It's also a bounded extraction task
+(short note in, five short fields out), not open-ended reasoning, so
+Opus 5's extra adaptive-thinking cost buys little here. Sonnet 5 is the
+middle point: still strong at classification/extraction, meaningfully
+faster/cheaper than Opus for a per-call latency the user feels every
+time.
+
+**Follow-up planned:** Pull the model string into a `_MODEL` constant
+and add `time.perf_counter()` timing around the API call (log on both
+success and failure) — not for this call alone, but so that later,
+swapping `_MODEL` between Sonnet 5 / Opus 5 / Haiku 4.5 and re-running
+the same notes gives a ready-made latency (and failure-rate) comparison
+table. This extends Phase 5's planned "scaling wall" LinkedIn post to
+also cover a model-tier tradeoff, not just context-stuffing vs.
+retrieval.
+
+**Takeaway:** cheap instrumentation (one timing constant + one log line)
+added at build time can turn a future one-off experiment into "just
+read the logs" — worth doing whenever the future comparison is already
+foreseeable, not just when you're about to run it.
+
+### 2026-08-22 — Bug: CLI's `httpx.post` default timeout too short for a Claude-backed endpoint
+
+**Problem:** After wiring `structure_note()` into `create_entry()` (Phase
+3B) and adding a real `ANTHROPIC_API_KEY`, running `journal log "..."`
+threw `httpx.ReadTimeout` in the CLI with a full traceback, even though
+nothing about the request itself was wrong.
+
+**Investigation:** Checked the backend's own terminal output (the
+running `uvicorn` process) rather than assuming the request had failed
+server-side:
+```
+INFO:httpx:HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO:app.services.claude_structuring:Claude structuring ok model=claude-sonnet-5 duration=5.69s
+```
+The Claude call succeeded in 5.69s and the entry committed to the DB
+fine (confirmed via `GET /entries` — entry #4 existed with real
+structured fields). The CLI's `httpx.post(...)` call in
+[client.py](../cli/journal_cli/client.py), however, passed no `timeout`
+argument, so `httpx` used its default — 5 seconds total. The CLI gave up
+and raised client-side one moment before the backend would have replied.
+
+**Fix:** Added `timeout=30.0` to the `httpx.post(...)` call in
+`client.py` — comfortable headroom above the measured 5.69s, including
+room for the model to later be swapped to Opus 5 (likely slower) for the
+Phase 5 model-latency comparison without the CLI falsely reporting
+failure on a request that actually succeeded.
+
+**Takeaway:** `httpx`'s 5s default timeout is fine for a typical
+CRUD-style REST endpoint but was never designed around "this endpoint
+makes a real LLM call before replying" — any client hitting an
+LLM-backed endpoint needs its timeout raised explicitly, since default
+HTTP client timeouts assume millisecond-scale responses. Also: when a
+client-side exception fires, check the *server's* logs before assuming
+the request failed — the backend can succeed while the client alone
+gives up.
+
+### 2026-08-22 — Decision: park automatic session-capture, build a manual `/journal` command instead
+
+**Context:** Explored whether the CLI could auto-capture *how* a bug was
+actually debugged (via Claude Code, manually, or another agent CLI)
+instead of requiring the user to type a summary by hand — the concern
+being that manual note-typing risks making the tool no better than
+pasting into a personal notes app.
+
+**Research (verified against official docs, not blog sources):**
+Claude Code hooks can technically do this — `SessionEnd` fires once per
+session with a `transcript_path` to the full JSONL conversation, and a
+hook can shell out to run `journal log` with real content
+(`~/.claude/settings.json` or project `.claude/settings.json`; hooks
+block execution up to a configurable timeout, default 1.5s, up to 60s
+max — not fire-and-forget).
+
+**Why rejected as the primary mechanism (two separate problems found):**
+1. **"Session" ≠ "one topic."** A Claude Code session is tied to
+   process lifetime, not topic boundaries — this user's actual pattern
+   is one long-running session that's rarely if ever closed, covering
+   many unrelated bugs/decisions/learnings over days. `SessionEnd`
+   would almost never fire, and when it did, would bundle everything
+   into one undifferentiated blob rather than the separate entries
+   actually wanted.
+2. **Segmentation (splitting a transcript into multiple entries) is a
+   solvable schema problem, but it doesn't solve the deeper one:
+   significance.** An automatic extractor has no concept of what's
+   *worth* logging vs. noise — e.g. entry #4
+   (`"testing after claude restructuring"`) was itself a throwaway test
+   note that still produced an entry. The manual "log this" pattern
+   used throughout this session's actual work implicitly filters
+   signal from noise for free, because a human is choosing the moment;
+   full automation would need to independently solve that judgment
+   call, which is the actual hard, unsolved part of the feature — not
+   a v1-vs-v2 detail.
+
+**Decision:** Build a manual `/journal` Claude Code slash command next
+(pulls minimal recent context, calls the existing structuring pipeline,
+logs one entry) — preserves the human significance-judgment for free,
+and is mostly wiring on top of what's already built (Phase 3B). Extend
+`structure_note()`/`output_format` to return a *list* of entries rather
+than one, since even a manual invocation may cover several topics in
+one note.
+
+**Idea documented but explicitly deferred — a "significance detector":**
+instead of asking an LLM "is this important" (too vague, reproduces the
+noise problem), use concrete signal proxies a hook can actually observe
+— e.g. a `PreToolUse`/`PostToolUse` pattern of bash failing, retrying,
+then succeeding (a bug fought and fixed); a git commit landing; the same
+file/error recurring across many tool calls. Surface high-confidence
+matches as a one-keystroke terminal confirm ("looks like you just fixed
+X — log it? y/n"), not silent auto-logging — keeps the human as final
+gate while removing the burden of remembering to invoke `/journal`
+manually.
+
+**Why this is deferred, not scoped in now:** it requires real
+cross-invocation state Claude Code hooks don't provide natively (each
+hook firing is stateless — detecting "3 failed attempts then success"
+means building and maintaining an external rolling log of tool-call
+outcomes ourselves, on every tool call, every session). And the proxy
+signals are themselves an imperfect heuristic, not a solved version of
+significance (a bash retry is often just a typo, not a real debugging
+struggle) — this would be its own multi-iteration tuning project,
+comparable in effort to everything built so far, sitting on top of a
+`/journal` command that doesn't exist yet. Revisit only with real
+evidence after `/journal` ships — e.g. repeatedly noticing "I wish I'd
+logged that" after the fact — not preemptively.
+
+**Takeaway:** when a feature's "automatic" version requires solving a
+genuinely fuzzy judgment call (here: significance), don't let a clean
+technical fix for an adjacent problem (segmentation) create false
+confidence that the hard part is solved too. Sequencing manual-first and
+gathering real evidence of a gap is cheaper than building speculative
+infrastructure for a problem that might not exist in practice.
+
+### 2026-08-22 — Bug: `/journal` custom command not registering — `allowed-tools` colon syntax invalid
+
+**Context:** Built a `/journal` Claude Code slash command
+([`.claude/commands/journal.md`](../.claude/commands/journal.md)) that
+drafts a journal entry from recent conversation context and, after user
+confirmation, runs `journal log` — a manual, lower-friction alternative
+to typing a full summary by hand (chosen over automatic session/hook
+capture, see the decision above).
+
+**Learning — custom commands vs. Skills:** Claude Code's official docs
+state commands and Skills are unified, not one deprecating the other:
+*"Custom commands have been merged into skills. A file at
+`.claude/commands/deploy.md` and a skill at
+`.claude/skills/deploy/SKILL.md` both create `/deploy` and work the same
+way. Your existing `.claude/commands/` files keep working."* Didn't know
+this — assumed the flat-file `.claude/commands/<name>.md` format might
+be legacy-only; it's current, documented, first-class.
+
+**Problem:** After creating the file (and fixing an initial unrelated
+mistake — the folder was named `claude/` instead of `.claude/`),
+`/journal` still returned "no matching commands" in a brand new session,
+even though other built-in slash commands worked fine.
+
+**Investigation:** The frontmatter had
+`allowed-tools: Bash(journal:*)` — a colon-separated pattern. Checked
+official docs again: the documented `allowed-tools` glob syntax is
+**space**-separated (`Bash(git add *)`, `Bash(git commit *)`), not
+colon-separated. Invalid/unrecognized frontmatter appears to make
+Claude Code silently skip loading the whole command file — no visible
+parse error, it just doesn't show up.
+
+**Fix:** Changed to `allowed-tools: Bash(journal *)` (space instead of
+colon), matching the documented pattern shape.
+
+**Takeaway:** when a Claude Code custom command silently fails to
+register, suspect frontmatter syntax first — invalid YAML or an
+undocumented pattern shape fails closed with no error message, which
+looks identical to "file not found" or "wrong location" from the
+outside. Worth checking the exact documented examples (not inferring
+syntax from adjacent tools' conventions) before assuming a location or
+naming problem.
+
+**Update — the syntax fix wasn't the actual root cause.** After fixing
+`allowed-tools` and restarting VSCode fully, `/journal` *still* didn't
+register — and neither did a trivial zero-frontmatter test command
+(`.claude/commands/hello.md`, no `---` block at all), which ruled out
+`journal.md`'s content entirely. Root cause: **the VSCode Claude Code
+extension's chat panel doesn't read `.claude/commands/` at all — only
+the standalone `claude` CLI does.** Confirmed by installing the CLI
+(`npm install -g @anthropic-ai/claude-code`, not previously installed on
+this machine — only the extension was present) and running `/hello` in
+a terminal `claude` session, where it worked immediately.
+
+**Resolution:** ran `/journal` in the standalone CLI terminal session —
+it registered, drafted a note from recent conversation context, waited
+for explicit confirmation as designed, and on confirming created entry
+#6. First successful end-to-end run of the manual-capture design from
+the decision above.
+
+**Takeaway (extending the one above):** when a Claude Code feature
+seems to not work despite correct files/syntax/location, consider that
+the VSCode extension and the standalone CLI may not have full feature
+parity — they're not guaranteed to be the same implementation moving in
+lockstep. A trivial, content-free reproduction (the `hello.md` test)
+isolated this far faster than continuing to debug `journal.md`'s
+content would have. Going forward, `/journal` (and any future custom
+commands) needs to be run from a terminal `claude` session, not this
+VSCode chat panel.
+
+### 2026-08-22 — Decision: work primarily from the terminal `claude` CLI going forward
+
+**Context:** With `/journal` confirmed only runnable from the terminal
+CLI (not the VSCode extension panel), a new problem surfaced: the actual
+debugging/decision conversations for this project have been happening
+*in the VSCode extension panel* (this session). A `/journal` invocation
+from a fresh terminal session has no "recent conversation" to draw
+from — its whole design assumes it's running in the same session where
+the work happened.
+
+**Investigated:** whether `claude --resume` from a terminal could
+reopen *this exact* VSCode session, giving a terminal-driven `/journal`
+call access to this session's full history. Docs (checked via research
+agent) stated: *"The extension and CLI share the same conversation
+history"* — implying this should work.
+
+**Empirically disproven:** Ran `claude --resume` in a terminal — the
+picker showed only two sessions, and this session (auto-titled "project
+stage check" in the VSCode panel) was not among them. Confirmed further
+by resuming both listed sessions and asking each a fact stated
+explicitly in *this* conversation (the $5 prepaid API credit,
+auto-reload off) — neither knew it; one explicitly said it had no
+access to that information. So despite what the docs claim, this
+specific VSCode session is not reachable from the terminal CLI's resume
+mechanism in this setup — the practical reality contradicted the
+documented claim.
+
+**Decision:** Use the terminal `claude` CLI as the primary workspace
+for development work going forward, not the VSCode extension panel.
+Reasoning: `/journal`'s core design (drafting from "recent
+conversation") only holds when the debugging/decision work and the
+`/journal` invocation happen in the same session — which is only
+reliably true within one interface. The terminal CLI supports both
+custom commands *and* same-interface session resumption; the VSCode
+panel supports neither for this purpose. This current conversation
+stays as the historical record up to this point; it does not carry
+forward automatically.
+
+**Tradeoff accepted:** losing whatever VSCode-panel-specific ergonomics
+existed (inline diffs, IDE integration, etc. — not deeply evaluated) in
+exchange for `/journal` actually working as designed on new work,
+without falling back to manually retyping summaries (Option B,
+considered and rejected as mostly defeating the point of building the
+command).
+
+**Takeaway:** a documented claim about cross-interface feature parity
+(the "shared conversation history" claim) turned out not to hold in
+practice — worth remembering generally: even docs-verified research
+(useful and necessary, per the hooks/commands research earlier) can
+still be wrong or environment-dependent, and a direct empirical test
+(try it, ask a fact only the real session would know) is the actual
+tie-breaker when documented behavior and observed behavior disagree.
+
+### 2026-08-22 — Learning: Claude Code has no passive visibility into other terminals, and a "journal" naming collision
+
+**Learning — no passive terminal visibility:** confirmed (asked
+directly, in the new terminal `claude` session) that Claude Code cannot
+see output from a separate terminal window/process — e.g. an error in
+the PowerShell tab running `uvicorn` isn't visible unless it's pasted in
+manually, or the command is re-run through Claude's own tool calls
+instead. Relevant now that the standard workflow is two terminals side
+by side (one running the backend, one running `claude`) — errors in the
+backend terminal need to be copy-pasted over, not assumed visible.
+
+**Learning — "journal" is an overloaded term in this project, causing
+real confusion:** saying "log this finding" in the terminal session
+(intending "add this to `context/journal.md`") instead triggered the
+`/journal` slash command's structured-DB-entry flow (draft
+raw_note/entry_type → `journal log` → SQLite row) — because "journal
+entry" genuinely means two different things here: an edit to this
+markdown build-log file, vs. a row in the app's own `Entry` table. The
+`/journal` command's existence makes "log this"/"journal entry" default
+toward the DB-write interpretation, not the file-edit one, since that's
+the more recently-discussed meaning in a session that's been testing
+`/journal`.
+
+**Resolution for now:** be explicit about which one is meant — e.g. "add
+this to `journal.md`" vs. "log this via `/journal`" — rather than relying
+on "log this" alone. No renaming done yet; worth considering later
+if the ambiguity keeps causing friction (e.g. renaming the CLI/command
+to something like `entry` or `dj-log` to free up "journal" for referring
+unambiguously to `journal.md`).
+
+**Takeaway:** naming two related-but-distinct things in a project with
+overlapping vocabulary ("journal" for both the human build-log and the
+app's own core noun) creates exactly this kind of ambiguity — worth
+choosing more distinct terms earlier, though not disruptive enough here
+to warrant a rename mid-build.
+
+### 2026-08-22 — Decision: user builds Phase 3C code directly, Claude teaches instead of implementing
+
+**Decision:** For this project specifically, Claude writes no feature
+code going forward (migrations, endpoints, services, etc.) — the user
+writes it themselves, with Claude explaining approach/rationale and
+handling only bug fixes and docs/journal updates.
+
+**Why:** Claude started writing the Phase 3C FTS5 search implementation
+unprompted after the user said "let's start 3C"; the user stopped it
+immediately — this is a learning project, not a delegate-the-build one.
+
+**Takeaway:** "let's start [phase]" is agreement to move forward on the
+phase, not an invitation to write the code — worth checking which is
+meant before implementing, especially on a project explicitly framed as
+hands-on learning.
+
+### 2026-08-22 — Milestone: Phase 3C search infrastructure in progress (FTS5 schema + service function)
+
+**Context:** Building Phase 3C (retrieval/query) per the roadmap — SQLite
+FTS5 keyword search, chosen over embeddings/RAG for v1 (see "Where RAG
+Actually Belongs" above: only the "have I seen this before" flow is
+genuinely RAG, and the project's honest-scaling-wall narrative wants
+"start simple" before adding that).
+
+**Built so far, user-authored with Claude explaining design decisions:**
+1. `backend/app/core/search.py` — `FTS_SETUP_SQL`/`FTS_TEARDOWN_SQL`, a
+   shared list of raw SQL statements (not one multi-statement string,
+   since SQLite's driver executes one statement per call) so the
+   Alembic migration and future test fixtures can't drift apart.
+2. An `entries_fts` FTS5 virtual table via external-content mode
+   (`content='entries', content_rowid='id'`) — keeps `entries` as the
+   single source of truth instead of duplicating data into the search
+   index — plus three triggers (`entries_ai`/`entries_ad`/`entries_au`)
+   that manually sync `entries_fts` on insert/update/delete, since
+   external-content FTS5 tables don't auto-sync. Applied via Alembic
+   migration `f2617d5f7c63` (`down_revision` chained to `c15bab78e938`);
+   verified against `dev_journal.db` directly with `sqlite3` — table,
+   shadow tables, and all three triggers present.
+3. `search_entries()` in `app/services/entries.py` — joins `entries` to
+   `entries_fts` on `rowid`, filters with `MATCH :q` (+ optional
+   `project`), orders by `bm25(entries_fts)` ascending (FTS5's bm25 is
+   more-negative-is-better, opposite the usual intuition). Uses
+   SQLAlchemy `text()` with bound params rather than f-string SQL
+   (injection risk), then re-fetches each result via `db.get(Entry, id)`
+   since raw `execute()` rows aren't ORM objects `EntryRead` can
+   serialize from — an extra query per result, acceptable at this
+   project's scale.
+
+**Still open:** the `/search` endpoint (route-ordering gotcha: must be
+registered before `GET /{entry_id}` or FastAPI's path matching will
+swallow it), and syncing the test fixture in `test_entries.py` — it
+builds tables via `Base.metadata.create_all()`, which never runs Alembic
+migrations, so `entries_fts` won't exist there until `FTS_SETUP_SQL` is
+also executed against the test DB.
+
+### 2026-08-22 — Gotcha: FastAPI route ordering — `/{entry_id}` would swallow `/search`
+
+**Problem (caught before writing the code, not after):** `entries.py`'s
+existing routes are `POST /entries`, `GET /entries`, then
+`GET /entries/{entry_id}`, in that order. Adding `GET /entries/search`
+*after* `{entry_id}` would break it — FastAPI/Starlette match routes in
+registration order and stop at the first match, and `{entry_id}` is a
+path parameter that matches any single segment, including the literal
+string `"search"`. A request to `/entries/search?q=timeout` would hit
+`get_entry` first, with FastAPI trying (and failing) to parse `"search"`
+as `entry_id: int`, never reaching the actual search logic.
+
+**Fix:** register the new `/search` route *before*
+`@router.get("/{entry_id}")` in the file — plain literal paths need to
+come before parameterized ones that could shadow them.
+
+**Takeaway:** any time a new route is added to a router that already has
+a `/{param}` catch-all-shaped route, check registration order first —
+this class of bug is silent until the specific overlapping path is
+actually requested, so it's cheap to get right upfront and easy to miss
+in review otherwise.
+
+### 2026-08-22 — Bug: `uvicorn --reload` stopped picking up file changes after the first reload
+
+**Problem:** After adding the `/search` route to `entries.py`, a live
+request to `/entries/search?q=timeout` still returned the *old* 3-route
+behavior (a 422 trying to parse `"search"` as `entry_id: int`) — the
+exact failure mode the route-ordering fix above was supposed to prevent,
+even though the file on disk was already correctly ordered.
+
+**Investigation:** Checked the running server's log output directly
+(possible specifically because this session's backend was started via
+Claude's own background Bash tool call, not a separate terminal — see
+the earlier "no passive terminal visibility" learning). Found only one
+`WatchFiles detected changes... Reloading` line, triggered by
+`app/core/search.py`'s creation — no reload fired for the later edits to
+`services/entries.py` or `api/entries.py`. The running process was still
+serving code from before those edits.
+
+**Fix:** Stopped the background task and restarted `uvicorn app.main:app
+--reload` fresh. Re-tested `/entries/search?q=route` — correctly
+returned the matching entry.
+
+**Takeaway:** don't assume `--reload` fired for every save — if a code
+change doesn't seem to take effect, check the server's actual log output
+for a `Reloading` line covering that file before concluding the code
+itself is wrong. A full restart is a cheap way to rule this out.
+
+### 2026-08-22 — Milestone: Phase 3C (FTS5 search) complete, end to end
+
+**Outcome:** All five pieces built and verified working together:
+`app/core/search.py` (shared DDL), Alembic migration `f2617d5f7c63`,
+`search_entries()` in the service layer, the `GET /entries/search`
+route, and a `test_search_entries_finds_match` test in
+`test_entries.py` (fixture updated to run `FTS_SETUP_SQL` against the
+in-memory test DB after `Base.metadata.create_all()`, since Alembic
+migrations never run there). Full test suite passes. Manually verified
+via curl: searching "route" against real logged entries correctly
+returns only the matching one.
+
+**Process note:** built entirely by the user, with Claude limited to
+explaining design decisions and doing bug fixes/docs — see the earlier
+"user builds Phase 3C code directly" decision entry.
+
+**Where this leaves the roadmap:** Phase 3 (Backend API) is now fully
+done — 3A (create/list/get), 3B (Claude structuring), 3C (FTS5 keyword
+search). Semantic/embedding-based search remains explicitly out of
+scope per the "Where RAG Actually Belongs" framing (only the "have I
+seen this before" flow is genuinely RAG, and that's deferred until
+FTS5's limits are actually felt at real entry volume). Next up per the
+roadmap: Phase 4 (Interfaces) — CLI installability (deprioritized
+2026-08-22 in favor of 3B/3C, now unblocked) and/or the Streamlit
+frontend (chat interface + basic dashboard).

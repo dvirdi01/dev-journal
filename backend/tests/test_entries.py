@@ -3,15 +3,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
+from app.core.search import FTS_SETUP_SQL
 from app.core.db import Base, get_db
 from app.main import app
-
+from sqlalchemy import text
 
 # any test that takes client as a param automatically
 # gets whatever this fixture yields.
 @pytest.fixture
-def client():
+def client(monkeypatch):
+
+    monkeypatch.setattr("app.services.entries.structure_note", lambda raw_note, entry_type: None)
+
     # Create an in-memory SQLite database for testing
     engine = create_engine(
         "sqlite:///:memory:",
@@ -22,6 +25,10 @@ def client():
 
     # Create the database tables
     Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as connection:
+        for statement in FTS_SETUP_SQL:
+            connection.execute(text(statement))
 
     # Dependency override to use the test database
     def override_get_db():
@@ -57,3 +64,13 @@ def test_list_entries_filters_by_project(client):
     data = response.json()
     assert len(data) == 1
     assert data[0]["raw_note"] == "Note A"
+
+def test_search_entries_finds_match(client):
+    client.post("/entries", json={"raw_note": "Debugged a timeout error", "project": "EchoPrep"})
+    client.post("/entries", json={"raw_note": "Unrelated note about styling", "project": "EchoPrep"})
+
+    response = client.get("/entries/search", params={"q": "timeout"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert "timeout" in data[0]["raw_note"].lower()

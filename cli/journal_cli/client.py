@@ -11,7 +11,9 @@ def create_entry(raw_note: str, project: str, entry_type: str = "note") -> dict:
         # this is the one place the CLI actually knows where your backend lives.
         f"{settings.api_url}/entries",
         json={"raw_note": raw_note, "project": project, "entry_type": entry_type},
+        timeout=30.0,
     )
+
     #  if the backend returns an error status (4xx/5xx), this raises an
     # exception immediately instead of silently returning bad data.
     response.raise_for_status()
