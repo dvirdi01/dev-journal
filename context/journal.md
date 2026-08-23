@@ -1073,3 +1073,58 @@ overlapping vocabulary ("journal" for both the human build-log and the
 app's own core noun) creates exactly this kind of ambiguity — worth
 choosing more distinct terms earlier, though not disruptive enough here
 to warrant a rename mid-build.
+
+### 2026-08-22 — Decision: user builds Phase 3C code directly, Claude teaches instead of implementing
+
+**Decision:** For this project specifically, Claude writes no feature
+code going forward (migrations, endpoints, services, etc.) — the user
+writes it themselves, with Claude explaining approach/rationale and
+handling only bug fixes and docs/journal updates.
+
+**Why:** Claude started writing the Phase 3C FTS5 search implementation
+unprompted after the user said "let's start 3C"; the user stopped it
+immediately — this is a learning project, not a delegate-the-build one.
+
+**Takeaway:** "let's start [phase]" is agreement to move forward on the
+phase, not an invitation to write the code — worth checking which is
+meant before implementing, especially on a project explicitly framed as
+hands-on learning.
+
+### 2026-08-22 — Milestone: Phase 3C search infrastructure in progress (FTS5 schema + service function)
+
+**Context:** Building Phase 3C (retrieval/query) per the roadmap — SQLite
+FTS5 keyword search, chosen over embeddings/RAG for v1 (see "Where RAG
+Actually Belongs" above: only the "have I seen this before" flow is
+genuinely RAG, and the project's honest-scaling-wall narrative wants
+"start simple" before adding that).
+
+**Built so far, user-authored with Claude explaining design decisions:**
+1. `backend/app/core/search.py` — `FTS_SETUP_SQL`/`FTS_TEARDOWN_SQL`, a
+   shared list of raw SQL statements (not one multi-statement string,
+   since SQLite's driver executes one statement per call) so the
+   Alembic migration and future test fixtures can't drift apart.
+2. An `entries_fts` FTS5 virtual table via external-content mode
+   (`content='entries', content_rowid='id'`) — keeps `entries` as the
+   single source of truth instead of duplicating data into the search
+   index — plus three triggers (`entries_ai`/`entries_ad`/`entries_au`)
+   that manually sync `entries_fts` on insert/update/delete, since
+   external-content FTS5 tables don't auto-sync. Applied via Alembic
+   migration `f2617d5f7c63` (`down_revision` chained to `c15bab78e938`);
+   verified against `dev_journal.db` directly with `sqlite3` — table,
+   shadow tables, and all three triggers present.
+3. `search_entries()` in `app/services/entries.py` — joins `entries` to
+   `entries_fts` on `rowid`, filters with `MATCH :q` (+ optional
+   `project`), orders by `bm25(entries_fts)` ascending (FTS5's bm25 is
+   more-negative-is-better, opposite the usual intuition). Uses
+   SQLAlchemy `text()` with bound params rather than f-string SQL
+   (injection risk), then re-fetches each result via `db.get(Entry, id)`
+   since raw `execute()` rows aren't ORM objects `EntryRead` can
+   serialize from — an extra query per result, acceptable at this
+   project's scale.
+
+**Still open:** the `/search` endpoint (route-ordering gotcha: must be
+registered before `GET /{entry_id}` or FastAPI's path matching will
+swallow it), and syncing the test fixture in `test_entries.py` — it
+builds tables via `Base.metadata.create_all()`, which never runs Alembic
+migrations, so `entries_fts` won't exist there until `FTS_SETUP_SQL` is
+also executed against the test DB.

@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-
+from sqlalchemy import text
 from app.models.entry import Entry
 from app.schemas.entry import EntryCreate
 from app.services.claude_structuring import structure_note
@@ -31,3 +31,14 @@ def list_entries(db: Session, project: str | None = None) -> list[Entry]:
 
 def get_entry(db: Session, entry_id: int) -> Entry | None:
     return db.get(Entry, entry_id)
+
+def search_entries(db: Session, q: str, project: str | None = None) -> list[Entry]:
+    sql = "SELECT entries.* FROM entries JOIN entries_fts ON entries.id = entries_fts.rowid WHERE entries_fts MATCH :q"
+    params = {"q": q}
+    if project:
+        sql += " AND entries.project = :project"
+        params["project"] = project
+    sql += " ORDER BY bm25(entries_fts)"
+
+    rows = db.execute(text(sql), params).mappings().all()
+    return [db.get(Entry, row["id"]) for row in rows]
