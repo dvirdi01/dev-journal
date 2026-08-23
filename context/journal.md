@@ -1150,3 +1150,55 @@ a `/{param}` catch-all-shaped route, check registration order first —
 this class of bug is silent until the specific overlapping path is
 actually requested, so it's cheap to get right upfront and easy to miss
 in review otherwise.
+
+### 2026-08-22 — Bug: `uvicorn --reload` stopped picking up file changes after the first reload
+
+**Problem:** After adding the `/search` route to `entries.py`, a live
+request to `/entries/search?q=timeout` still returned the *old* 3-route
+behavior (a 422 trying to parse `"search"` as `entry_id: int`) — the
+exact failure mode the route-ordering fix above was supposed to prevent,
+even though the file on disk was already correctly ordered.
+
+**Investigation:** Checked the running server's log output directly
+(possible specifically because this session's backend was started via
+Claude's own background Bash tool call, not a separate terminal — see
+the earlier "no passive terminal visibility" learning). Found only one
+`WatchFiles detected changes... Reloading` line, triggered by
+`app/core/search.py`'s creation — no reload fired for the later edits to
+`services/entries.py` or `api/entries.py`. The running process was still
+serving code from before those edits.
+
+**Fix:** Stopped the background task and restarted `uvicorn app.main:app
+--reload` fresh. Re-tested `/entries/search?q=route` — correctly
+returned the matching entry.
+
+**Takeaway:** don't assume `--reload` fired for every save — if a code
+change doesn't seem to take effect, check the server's actual log output
+for a `Reloading` line covering that file before concluding the code
+itself is wrong. A full restart is a cheap way to rule this out.
+
+### 2026-08-22 — Milestone: Phase 3C (FTS5 search) complete, end to end
+
+**Outcome:** All five pieces built and verified working together:
+`app/core/search.py` (shared DDL), Alembic migration `f2617d5f7c63`,
+`search_entries()` in the service layer, the `GET /entries/search`
+route, and a `test_search_entries_finds_match` test in
+`test_entries.py` (fixture updated to run `FTS_SETUP_SQL` against the
+in-memory test DB after `Base.metadata.create_all()`, since Alembic
+migrations never run there). Full test suite passes. Manually verified
+via curl: searching "route" against real logged entries correctly
+returns only the matching one.
+
+**Process note:** built entirely by the user, with Claude limited to
+explaining design decisions and doing bug fixes/docs — see the earlier
+"user builds Phase 3C code directly" decision entry.
+
+**Where this leaves the roadmap:** Phase 3 (Backend API) is now fully
+done — 3A (create/list/get), 3B (Claude structuring), 3C (FTS5 keyword
+search). Semantic/embedding-based search remains explicitly out of
+scope per the "Where RAG Actually Belongs" framing (only the "have I
+seen this before" flow is genuinely RAG, and that's deferred until
+FTS5's limits are actually felt at real entry volume). Next up per the
+roadmap: Phase 4 (Interfaces) — CLI installability (deprioritized
+2026-08-22 in favor of 3B/3C, now unblocked) and/or the Streamlit
+frontend (chat interface + basic dashboard).
